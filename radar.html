@@ -2,148 +2,229 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Motor do Radar</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Radar Inteligente</title>
     <style>
-        body { font-family: Arial, sans-serif; text-align: center; padding: 20px; background-color: #2c3e50; color: white; }
-        .caixa { background-color: #34495e; padding: 20px; border-radius: 15px; display: inline-block; box-shadow: 0px 4px 10px rgba(0,0,0,0.5); width: 90%; max-width: 400px; }
-        button { padding: 15px; font-size: 16px; margin: 8px 0; cursor: pointer; border: none; border-radius: 8px; font-weight: bold; width: 100%; transition: 0.3s; }
-        #btnConectar { background-color: #27ae60; color: white; }
-        #btnDesconectar { background-color: #c0392b; color: white; display: none; }
-        .info-gps { background-color: #16a085; padding: 15px; border-radius: 10px; margin-top: 15px; font-size: 14px; text-align: left; display: none; }
-        #status { font-size: 18px; margin-top: 15px; color: #f1c40f; font-weight: bold;}
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #2c3e50;
+            color: white;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            background-color: #34495e;
+            padding: 20px;
+            border-radius: 10px;
+            width: 100%;
+            max-width: 400px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        h2 { text-align: center; margin-top: 0; }
+        .btn-conectar {
+            background-color: #e74c3c;
+            color: white;
+            border: none;
+            padding: 15px;
+            width: 100%;
+            font-size: 18px;
+            font-weight: bold;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-bottom: 20px;
+        }
+        .btn-conectar.conectado { background-color: #27ae60; }
+        .status {
+            text-align: center;
+            font-size: 18px;
+            font-weight: bold;
+            color: #f1c40f;
+            margin-bottom: 20px;
+        }
+        .dados-box {
+            background-color: #16a085;
+            padding: 15px;
+            border-radius: 5px;
+            font-size: 16px;
+            line-height: 1.5;
+        }
+        .carregando-aviso { text-align: center; font-size: 12px; color: #bdc3c7; margin-bottom: 10px; }
     </style>
 </head>
 <body>
 
-    <div class="caixa">
-        <h2>📡 Conexão e Sensores</h2>
-        <button id="btnConectar">CONECTAR À PLACA</button>
-        <button id="btnDesconectar">DESCONECTAR</button>
-        <div id="status">Status: Desconectado 🔴</div>
-
-        <div id="infoGps" class="info-gps">
-            <strong>Dados do Celular:</strong><br><br>
-            Velocidade Atual: <span id="txtVelocidade">0</span> km/h<br>
-            Distância do Radar Falso: <span id="txtDistancia">Calculando...</span> m
-        </div>
+<div class="container">
+    <h2>📡 Conexão e Sensores</h2>
+    <div id="avisoRadares" class="carregando-aviso">Baixando mapa de radares...</div>
+    
+    <button id="btnConectar" class="btn-conectar" onclick="conectarBluetooth()">CONECTAR PLACA</button>
+    
+    <div id="statusPlaca" class="status">AGUARDANDO... 🔴</div>
+    
+    <div class="dados-box">
+        <b>Dados do Celular:</b><br><br>
+        Velocidade Atual: <span id="txtVelocidade">0</span> km/h<br>
+        Radar mais próximo: <span id="txtDistancia">Procurando...</span><br>
+        Limite da Via: <span id="txtLimite">--</span> km/h
     </div>
+</div>
 
-    <script>
-        const btnConectar = document.getElementById('btnConectar');
-        const btnDesconectar = document.getElementById('btnDesconectar');
-        const statusTexto = document.getElementById('status');
-        const infoGps = document.getElementById('infoGps');
-        const txtVelocidade = document.getElementById('txtVelocidade');
-        const txtDistancia = document.getElementById('txtDistancia');
+<script>
+    // Variáveis Globais
+    let listaRadares = [];
+    let wakeLock = null;
+    let bluetoothDevice = null;
+    let bluetoothCaracteristica = null;
+    
+    // Configurações do Bluetooth (Nomes que colocaremos no ESP32)
+    const SERVICO_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
+    const CARACTERISTICA_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
 
-        const servicoUUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
-        const caracteristicaUUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
-        
-        let dispositivoBluetooth;
-        let caracteristicaGlobal;
-        let vigiaGPS;
-
-        // --- 1. COMUNICAÇÃO BLUETOOTH ---
-        btnConectar.addEventListener('click', async () => {
-            try {
-                statusTexto.innerText = 'Procurando... 🔎';
-                dispositivoBluetooth = await navigator.bluetooth.requestDevice({
-                    filters: [{ name: 'Radar do Carro' }],
-                    optionalServices: [servicoUUID]
-                });
-
-                dispositivoBluetooth.addEventListener('gattserverdisconnected', aoDesconectar);
-                const servidorGATT = await dispositivoBluetooth.gatt.connect();
-                const servico = await servidorGATT.getPrimaryService(servicoUUID);
-                caracteristicaGlobal = await servico.getCharacteristic(caracteristicaUUID);
-
-                statusTexto.innerText = 'CONECTADO! 🟢';
-                btnConectar.style.display = 'none';
-                btnDesconectar.style.display = 'block';
-                infoGps.style.display = 'block';
-
-                iniciarRastreamentoGPS(); // Liga o GPS do celular quando conecta no Bluetooth
-
-            } catch (erro) {
-                statusTexto.innerText = 'Erro na conexão ❌';
-            }
-        });
-
-        btnDesconectar.addEventListener('click', () => {
-            if (dispositivoBluetooth && dispositivoBluetooth.gatt.connected) {
-                dispositivoBluetooth.gatt.disconnect();
-            }
-        });
-
-        function aoDesconectar() {
-            statusTexto.innerText = 'Desconectado 🔴';
-            btnConectar.style.display = 'block';
-            btnDesconectar.style.display = 'none';
-            infoGps.style.display = 'none';
-            if(vigiaGPS) navigator.geolocation.clearWatch(vigiaGPS);
-        }
-
-        async function enviarComando(texto) {
-            if (caracteristicaGlobal) {
-                let codificador = new TextEncoder();
-                await caracteristicaGlobal.writeValue(codificador.encode(texto));
-            }
-        }
-
-        // --- 2. LÓGICA MATEMÁTICA (HAVERSINE) ---
-        function calcularDistancia(lat1, lon1, lat2, lon2) {
-            const R = 6371e3; // Raio da Terra em metros
-            const dLat = (lat2 - lat1) * Math.PI / 180;
-            const dLon = (lon2 - lon1) * Math.PI / 180;
-            const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
-            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-            return R * c; // Retorna em metros
-        }
-
-        // --- 3. REGRAS DE NEGÓCIO E GPS ---
-        function iniciarRastreamentoGPS() {
+    // 1. CARREGAR O CSV AO ABRIR A PÁGINA
+    window.onload = async () => {
+        try {
+            const resposta = await fetch('maparadar.csv');
+            const texto = await resposta.text();
+            const linhas = texto.split('\n');
             
-            // Coordenada Falsa de um Radar para testarmos a lógica
-            const latRadarFalso = -23.550520; 
-            const lonRadarFalso = -46.633308;
-            let radarAlertando = false;
-
-            // O navegador avisa automaticamente sempre que você andar
-            vigiaGPS = navigator.geolocation.watchPosition((posicao) => {
-                
-                const latAtual = posicao.coords.latitude;
-                const lonAtual = posicao.coords.longitude;
-                
-                // Converte a velocidade do GPS de metros por segundo para km/h
-                let velAtual = posicao.coords.speed ? (posicao.coords.speed * 3.6) : 0; 
-                txtVelocidade.innerText = velAtual.toFixed(0);
-
-                // --- GATILHO DO RADAR (Abaixo de 75 metros) ---
-                let distancia = calcularDistancia(latAtual, lonAtual, latRadarFalso, lonRadarFalso);
-                txtDistancia.innerText = distancia.toFixed(0);
-
-                if (distancia <= 75.0 && !radarAlertando) {
-                    enviarComando("LIGAR_RADAR"); // Envia para o ESP32
-                    radarAlertando = true;
-                } else if (distancia > 75.0 && radarAlertando) {
-                    enviarComando("DESLIGAR_RADAR"); // Desliga no ESP32
-                    radarAlertando = false;
+            for (let linha of linhas) {
+                if (linha.trim() === '') continue;
+                let partes = linha.split(',');
+                if (partes.length >= 3) {
+                    let lon = parseFloat(partes[0]);
+                    let lat = parseFloat(partes[1]);
+                    let vel = 0;
+                    if (partes[2].includes('@')) {
+                        vel = parseInt(partes[2].split('@')[1]);
+                    }
+                    listaRadares.push({ lat: lat, lon: lon, vel: vel });
                 }
-
-                // --- GATILHO DA VELOCIDADE (Exemplo fixo de 60km/h) ---
-                // Depois você substitui esse 60 pelo limite da API Overpass
-                let limiteVia = 60; 
-                if (velAtual > (limiteVia * 1.10)) {
-                    enviarComando("LIGAR_VELOCIDADE");
-                } else {
-                    enviarComando("DESLIGAR_VELOCIDADE");
-                }
-
-            }, (erro) => {
-                console.error("Erro no GPS:", erro);
-            }, { enableHighAccuracy: true });
+            }
+            document.getElementById('avisoRadares').innerText = `✅ ${listaRadares.length} radares carregados na memória!`;
+        } catch (erro) {
+            document.getElementById('avisoRadares').innerText = `❌ Erro ao carregar radares.`;
         }
-    </script>
+    };
+
+    // 2. FUNÇÃO WAKE LOCK (Manter tela acesa)
+    async function manterTelaLigada() {
+        try {
+            wakeLock = await navigator.wakeLock.request('screen');
+        } catch (err) {
+            console.log("Erro no Wake Lock", err);
+        }
+    }
+
+    // 3. CONECTAR BLUETOOTH E INICIAR TUDO
+    async function conectarBluetooth() {
+        try {
+            bluetoothDevice = await navigator.bluetooth.requestDevice({
+                filters: [{ name: 'Radar Ninja' }], // O nome que daremos pro ESP32
+                optionalServices: [SERVICO_UUID]
+            });
+
+            const server = await bluetoothDevice.gatt.connect();
+            const service = await server.getPrimaryService(SERVICO_UUID);
+            bluetoothCaracteristica = await service.getCharacteristic(CARACTERISTICA_UUID);
+
+            // Muda visual do botão e status
+            const btn = document.getElementById('btnConectar');
+            btn.innerText = "DESCONECTAR";
+            btn.classList.add('conectado');
+            document.getElementById('statusPlaca').innerHTML = "CONECTADO! 🟢";
+
+            // Ativa funções do celular
+            manterTelaLigada();
+            iniciarGPS();
+            
+            // Avisa o ESP32 para acender o LED Azul
+            enviarParaESP32("CONECTADO");
+
+        } catch (error) {
+            alert("Falha ao conectar: " + error);
+        }
+    }
+
+    // 4. ENVIAR DADOS PARA O ESP32
+    function enviarParaESP32(comando) {
+        if (bluetoothCaracteristica) {
+            let encoder = new TextEncoder('utf-8');
+            bluetoothCaracteristica.writeValue(encoder.encode(comando));
+        }
+    }
+
+    // 5. CÁLCULO DE DISTÂNCIA (Fórmula de Haversine)
+    function calcularDistancia(lat1, lon1, lat2, lon2) {
+        const R = 6371e3; // Raio da terra em metros
+        const phi1 = lat1 * Math.PI/180;
+        const phi2 = lat2 * Math.PI/180;
+        const deltaPhi = (lat2-lat1) * Math.PI/180;
+        const deltaLambda = (lon2-lon1) * Math.PI/180;
+
+        const a = Math.sin(deltaPhi/2) * Math.sin(deltaPhi/2) +
+                  Math.cos(phi1) * Math.cos(phi2) *
+                  Math.sin(deltaLambda/2) * Math.sin(deltaLambda/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c; // Retorna em metros
+    }
+
+    // 6. RASTREIO DE GPS (Coração do App)
+    let gpsID;
+    function iniciarGPS() {
+        if ("geolocation" in navigator) {
+            gpsID = navigator.geolocation.watchPosition(
+                (position) => {
+                    let latAtual = position.coords.latitude;
+                    let lonAtual = position.coords.longitude;
+                    
+                    // Transforma metros por segundo em km/h
+                    let velAtual = (position.coords.speed || 0) * 3.6;
+                    document.getElementById('txtVelocidade').innerText = Math.round(velAtual);
+
+                    let radarEncontrado = false;
+                    let menorDistancia = 999999;
+                    let velDoRadar = 0;
+
+                    // Busca o radar mais próximo num raio de 500m
+                    for (let radar of listaRadares) {
+                        // Filtro matemático rápido para não fritar o celular checando o Brasil todo
+                        if(Math.abs(radar.lat - latAtual) < 0.01 && Math.abs(radar.lon - lonAtual) < 0.01) {
+                            let distancia = calcularDistancia(latAtual, lonAtual, radar.lat, radar.lon);
+                            
+                            if (distancia < 500 && distancia < menorDistancia) {
+                                menorDistancia = Math.round(distancia);
+                                velDoRadar = radar.vel;
+                                radarEncontrado = true;
+                            }
+                        }
+                    }
+
+                    // LÓGICA DOS LEDS E INTERFACE
+                    if (radarEncontrado) {
+                        document.getElementById('txtDistancia').innerText = menorDistancia + " m";
+                        document.getElementById('txtLimite').innerText = velDoRadar;
+                        
+                        if (velAtual > velDoRadar) {
+                            enviarParaESP32("EXCESSO"); // Acende LED 0 e 1
+                        } else {
+                            enviarParaESP32("RADAR");   // Acende só o LED 0
+                        }
+                    } else {
+                        document.getElementById('txtDistancia').innerText = "Nenhum no raio de 500m";
+                        document.getElementById('txtLimite').innerText = "--";
+                        enviarParaESP32("LIMPO");       // Apaga os LEDs 0 e 1
+                    }
+                },
+                (erro) => { console.log("Erro de GPS", erro); },
+                { enableHighAccuracy: true, maximumAge: 0 }
+            );
+        } else {
+            alert("GPS não suportado no seu navegador.");
+        }
+    }
+</script>
+
 </body>
 </html>
