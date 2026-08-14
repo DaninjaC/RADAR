@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Radar Inteligente</title>
+    <title>Radar Ninja</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -56,7 +56,7 @@
 <body>
 
 <div class="container">
-    <h2>📡 Conexão e Sensores</h2>
+    <h2>📡 Radar Ninja</h2>
     <div id="avisoRadares" class="carregando-aviso">Baixando mapa de radares...</div>
     
     <button id="btnConectar" class="btn-conectar" onclick="conectarBluetooth()">CONECTAR PLACA</button>
@@ -67,18 +67,24 @@
         <b>Dados do Celular:</b><br><br>
         Velocidade Atual: <span id="txtVelocidade">0</span> km/h<br>
         Radar mais próximo: <span id="txtDistancia">Procurando...</span><br>
-        Limite da Via: <span id="txtLimite">--</span> km/h
+        Limite (<span id="lblFonte">---</span>): <span id="txtLimite">--</span> km/h
     </div>
 </div>
 
 <script>
-    // Variáveis Globais
+    // --- Variáveis Globais ---
     let listaRadares = [];
     let wakeLock = null;
     let bluetoothDevice = null;
     let bluetoothCaracteristica = null;
     
-    // Configurações do Bluetooth (Nomes que colocaremos no ESP32)
+    // Variáveis do OpenStreetMap
+    let lastOsmLat = 0;
+    let lastOsmLon = 0;
+    let lastOsmSpeed = 0; 
+    let isFetchingOsm = false;
+
+    // Configurações do Bluetooth (Devem bater com o código do ESP32)
     const SERVICO_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
     const CARACTERISTICA_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
 
@@ -102,9 +108,9 @@
                     listaRadares.push({ lat: lat, lon: lon, vel: vel });
                 }
             }
-            document.getElementById('avisoRadares').innerText = `✅ ${listaRadares.length} radares carregados na memória!`;
+            document.getElementById('avisoRadares').innerText = `✅ ${listaRadares.length} radares offline carregados!`;
         } catch (erro) {
-            document.getElementById('avisoRadares').innerText = `❌ Erro ao carregar radares.`;
+            document.getElementById('avisoRadares').innerText = `❌ Erro ao carregar mapa de radares offline.`;
         }
     };
 
@@ -117,11 +123,11 @@
         }
     }
 
-    // 3. CONECTAR BLUETOOTH E INICIAR TUDO
+    // 3. CONECTAR BLUETOOTH
     async function conectarBluetooth() {
         try {
             bluetoothDevice = await navigator.bluetooth.requestDevice({
-                filters: [{ name: 'Radar Ninja' }], // O nome que daremos pro ESP32
+                filters: [{ name: 'Radar Ninja' }], 
                 optionalServices: [SERVICO_UUID]
             });
 
@@ -129,17 +135,13 @@
             const service = await server.getPrimaryService(SERVICO_UUID);
             bluetoothCaracteristica = await service.getCharacteristic(CARACTERISTICA_UUID);
 
-            // Muda visual do botão e status
             const btn = document.getElementById('btnConectar');
             btn.innerText = "DESCONECTAR";
             btn.classList.add('conectado');
             document.getElementById('statusPlaca').innerHTML = "CONECTADO! 🟢";
 
-            // Ativa funções do celular
             manterTelaLigada();
             iniciarGPS();
-            
-            // Avisa o ESP32 para acender o LED Azul
             enviarParaESP32("CONECTADO");
 
         } catch (error) {
@@ -151,13 +153,13 @@
     function enviarParaESP32(comando) {
         if (bluetoothCaracteristica) {
             let encoder = new TextEncoder('utf-8');
-            bluetoothCaracteristica.writeValue(encoder.encode(comando));
+            bluetoothCaracteristica.writeValue(encoder.encode(comando)).catch(e => console.log("Erro BT", e));
         }
     }
 
-    // 5. CÁLCULO DE DISTÂNCIA (Fórmula de Haversine)
+    // 5. CÁLCULO DE DISTÂNCIA (Haversine em metros)
     function calcularDistancia(lat1, lon1, lat2, lon2) {
-        const R = 6371e3; // Raio da terra em metros
+        const R = 6371e3; 
         const phi1 = lat1 * Math.PI/180;
         const phi2 = lat2 * Math.PI/180;
         const deltaPhi = (lat2-lat1) * Math.PI/180;
@@ -167,32 +169,56 @@
                   Math.cos(phi1) * Math.cos(phi2) *
                   Math.sin(deltaLambda/2) * Math.sin(deltaLambda/2);
         const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-        return R * c; // Retorna em metros
+        return R * c; 
     }
 
-    // 6. RASTREIO DE GPS (Coração do App)
-    let gpsID;
+    // 6. CONSULTA AO OPENSTREETMAP (Silenciosa e Assíncrona)
+    async function buscarVelocidadeVia(lat, lon) {
+        if (isFetchingOsm) return;
+        isFetchingOsm = true;
+        try {
+            // Pede a rua num raio de 15 metros que tenha limite de velocidade cadastrado
+            let query = `[out:json];way(around:15,${lat},${lon})["maxspeed"];out tags;`;
+            let url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
+            
+            const response = await fetch(url);
+            const data = await response.json();
+            
+            if (data.elements && data.elements.length > 0) {
+                let speedRaw = data.elements[0].tags.maxspeed;
+                let speedParsed = parseInt(speedRaw);
+                if (!isNaN(speedParsed)) {
+                    lastOsmSpeed = speedParsed;
+                }
+            } else {
+                lastOsmSpeed = 0; // Rua não tem velocidade cadastrada no mapa
+            }
+        } catch (error) {
+            console.log("Erro OSM:", error);
+        } finally {
+            isFetchingOsm = false;
+        }
+    }
+
+    // 7. RASTREIO DE GPS (Coração Híbrido)
     function iniciarGPS() {
         if ("geolocation" in navigator) {
-            gpsID = navigator.geolocation.watchPosition(
+            navigator.geolocation.watchPosition(
                 (position) => {
                     let latAtual = position.coords.latitude;
                     let lonAtual = position.coords.longitude;
-                    
-                    // Transforma metros por segundo em km/h
                     let velAtual = (position.coords.speed || 0) * 3.6;
+                    
                     document.getElementById('txtVelocidade').innerText = Math.round(velAtual);
 
                     let radarEncontrado = false;
                     let menorDistancia = 999999;
                     let velDoRadar = 0;
 
-                    // Busca o radar mais próximo num raio de 500m
+                    // A. PROCURA RADAR OFFLINE (Prioridade 1)
                     for (let radar of listaRadares) {
-                        // Filtro matemático rápido para não fritar o celular checando o Brasil todo
                         if(Math.abs(radar.lat - latAtual) < 0.01 && Math.abs(radar.lon - lonAtual) < 0.01) {
                             let distancia = calcularDistancia(latAtual, lonAtual, radar.lat, radar.lon);
-                            
                             if (distancia < 500 && distancia < menorDistancia) {
                                 menorDistancia = Math.round(distancia);
                                 velDoRadar = radar.vel;
@@ -201,27 +227,42 @@
                         }
                     }
 
-                    // LÓGICA DOS LEDS E INTERFACE
+                    let limiteAtivo = 0;
+
+                    // B. LÓGICA DE DECISÃO (Radar vs OSM)
                     if (radarEncontrado) {
+                        limiteAtivo = velDoRadar;
                         document.getElementById('txtDistancia').innerText = menorDistancia + " m";
-                        document.getElementById('txtLimite').innerText = velDoRadar;
-                        
-                        if (velAtual > velDoRadar) {
-                            enviarParaESP32("EXCESSO"); // Acende LED 0 e 1
-                        } else {
-                            enviarParaESP32("RADAR");   // Acende só o LED 0
-                        }
+                        document.getElementById('lblFonte').innerText = "Radar";
                     } else {
                         document.getElementById('txtDistancia').innerText = "Nenhum no raio de 500m";
-                        document.getElementById('txtLimite').innerText = "--";
-                        enviarParaESP32("LIMPO");       // Apaga os LEDs 0 e 1
+                        document.getElementById('lblFonte').innerText = "Via";
+                        
+                        // Verifica se andou mais de 100m para não travar a API do OpenStreetMap
+                        let distOSM = calcularDistancia(latAtual, lonAtual, lastOsmLat, lastOsmLon);
+                        if (distOSM > 100 || lastOsmLat === 0) {
+                            lastOsmLat = latAtual;
+                            lastOsmLon = lonAtual;
+                            buscarVelocidadeVia(latAtual, lonAtual); 
+                        }
+                        limiteAtivo = lastOsmSpeed;
+                    }
+
+                    // C. ATUALIZA A TELA
+                    document.getElementById('txtLimite').innerText = limiteAtivo > 0 ? limiteAtivo : "--";
+
+                    // D. ATUALIZA OS LEDS DA PLACA
+                    if (limiteAtivo > 0 && Math.round(velAtual) > limiteAtivo) {
+                        enviarParaESP32("EXCESSO");
+                    } else if (radarEncontrado) {
+                        enviarParaESP32("RADAR");
+                    } else {
+                        enviarParaESP32("LIMPO");
                     }
                 },
                 (erro) => { console.log("Erro de GPS", erro); },
                 { enableHighAccuracy: true, maximumAge: 0 }
             );
-        } else {
-            alert("GPS não suportado no seu navegador.");
         }
     }
 </script>
