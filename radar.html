@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Radar Inteligente</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background-color: #2c3e50; color: white; }
+        .caixa { background-color: #34495e; padding: 30px; border-radius: 15px; display: inline-block; box-shadow: 0px 4px 10px rgba(0,0,0,0.5); }
+        button { padding: 15px 30px; font-size: 18px; margin: 10px; cursor: pointer; border: none; border-radius: 8px; font-weight: bold; transition: 0.3s; }
+        #btnConectar { background-color: #27ae60; color: white; }
+        #btnConectar:hover { background-color: #2ecc71; }
+        #btnDesconectar { background-color: #c0392b; color: white; display: none; }
+        #btnDesconectar:hover { background-color: #e74c3c; }
+        #status { font-size: 22px; margin-top: 20px; color: #f1c40f; }
+    </style>
+</head>
+<body>
+
+    <div class="caixa">
+        <h1>📡 Controle do Radar</h1>
+        <p>Conecte seu navegador direto à placa ESP32</p>
+
+        <button id="btnConectar">CONECTAR AO RADAR</button>
+        <button id="btnDesconectar">DESCONECTAR</button>
+
+        <div id="status">Status: Desconectado 🔴</div>
+    </div>
+
+    <script>
+        const btnConectar = document.getElementById('btnConectar');
+        const btnDesconectar = document.getElementById('btnDesconectar');
+        const statusTexto = document.getElementById('status');
+
+        // As mesmas "senhas" (UUIDs) que colocamos no código do Arduino!
+        const servicoUUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
+        const caracteristicaUUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
+        
+        let dispositivoBluetooth;
+
+        btnConectar.addEventListener('click', async () => {
+            try {
+                statusTexto.innerText = 'Status: Procurando a placa... 🔎';
+                
+                // 1. Abre a janela do Chrome pedindo para você escolher a placa
+                dispositivoBluetooth = await navigator.bluetooth.requestDevice({
+                    filters: [{ name: 'Radar do Carro' }],
+                    optionalServices: [servicoUUID]
+                });
+
+                // Se a placa desligar do nada, avisa a página
+                dispositivoBluetooth.addEventListener('gattserverdisconnected', aoDesconectar);
+
+                statusTexto.innerText = 'Status: Conectando... ⏳';
+
+                // 2. Conecta de verdade!
+                const servidorGATT = await dispositivoBluetooth.gatt.connect();
+                
+                // 3. Prepara a rota de dados (vamos usar muito isso depois)
+                const servico = await servidorGATT.getPrimaryService(servicoUUID);
+                const caracteristica = await servico.getCharacteristic(caracteristicaUUID);
+
+                // MÁGICA FEITA! Atualiza a tela.
+                statusTexto.innerText = 'Status: CONECTADO! 🟢';
+                btnConectar.style.display = 'none';
+                btnDesconectar.style.display = 'inline-block';
+
+            } catch (erro) {
+                console.error("Deu erro:", erro);
+                statusTexto.innerText = 'Status: Operação cancelada ou erro ❌';
+            }
+        });
+
+        btnDesconectar.addEventListener('click', () => {
+            if (dispositivoBluetooth && dispositivoBluetooth.gatt.connected) {
+                dispositivoBluetooth.gatt.disconnect();
+            }
+        });
+
+        function aoDesconectar() {
+            statusTexto.innerText = 'Status: Desconectado 🔴';
+            btnConectar.style.display = 'inline-block';
+            btnDesconectar.style.display = 'none';
+        }
+    </script>
+</body>
+</html>
