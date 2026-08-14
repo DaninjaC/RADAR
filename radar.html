@@ -5,47 +5,66 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Radar Inteligente</title>
     <style>
-        body { font-family: Arial, sans-serif; text-align: center; padding: 30px; background-color: #2c3e50; color: white; }
-        .caixa { background-color: #34495e; padding: 30px; border-radius: 15px; display: inline-block; box-shadow: 0px 4px 10px rgba(0,0,0,0.5); }
-        button { padding: 15px 30px; font-size: 16px; margin: 10px; cursor: pointer; border: none; border-radius: 8px; font-weight: bold; transition: 0.3s; width: 100%; max-width: 250px; }
+        body { font-family: Arial, sans-serif; text-align: center; padding: 20px; background-color: #2c3e50; color: white; }
+        .caixa { background-color: #34495e; padding: 20px; border-radius: 15px; display: inline-block; box-shadow: 0px 4px 10px rgba(0,0,0,0.5); width: 90%; max-width: 400px; }
+        
+        button { padding: 15px; font-size: 16px; margin: 8px 0; cursor: pointer; border: none; border-radius: 8px; font-weight: bold; width: 100%; transition: 0.3s; }
         
         #btnConectar { background-color: #27ae60; color: white; }
         #btnDesconectar { background-color: #c0392b; color: white; display: none; }
         
-        /* Botões de Ação novos */
-        .btnAcao { background-color: #2980b9; color: white; display: none; margin-top: 20px;}
-        .btnAcao:active { background-color: #1c5980; }
+        /* Estilos dos botões de teste separados */
+        .painel-controles { display: none; margin-top: 20px; text-align: left; }
+        .bloco-led { background-color: #2c3e50; padding: 15px; border-radius: 10px; margin-bottom: 15px; border: 1px solid #7f8c8d; }
+        .bloco-led h3 { margin-top: 0; text-align: center; font-size: 18px; color: #ecf0f1; }
+        
+        .btnLigar { background-color: #2980b9; color: white; }
+        .btnLigar:active { background-color: #1c5980; }
+        .btnDesligar { background-color: #7f8c8d; color: white; }
+        .btnDesligar:active { background-color: #636e72; }
 
-        #status { font-size: 20px; margin-top: 20px; color: #f1c40f; font-weight: bold;}
+        #status { font-size: 18px; margin-top: 15px; color: #f1c40f; font-weight: bold; text-align: center;}
     </style>
 </head>
 <body>
 
     <div class="caixa">
-        <h1>📡 Controle do Radar</h1>
+        <h2>📡 Painel de Testes</h2>
 
-        <button id="btnConectar">CONECTAR AO RADAR</button>
+        <button id="btnConectar">CONECTAR À PLACA</button>
         <button id="btnDesconectar">DESCONECTAR</button>
 
         <div id="status">Status: Desconectado 🔴</div>
 
-        <!-- Nossos novos botões de teste -->
-        <button id="btnLigar" class="btnAcao">💡 LIGAR LEDs</button>
-        <button id="btnDesligar" class="btnAcao">🌑 DESLIGAR LEDs</button>
+        <!-- Painel com controles individuais (Fica escondido até conectar) -->
+        <div id="painelControles" class="painel-controles">
+            
+            <div class="bloco-led">
+                <h3>🔴 LED 1 (Radar - Pino 0)</h3>
+                <button class="btnLigar" onclick="enviarComando('LIGAR_RADAR')">LIGAR LED 1</button>
+                <button class="btnDesligar" onclick="enviarComando('DESLIGAR_RADAR')">DESLIGAR LED 1</button>
+            </div>
+
+            <div class="bloco-led">
+                <h3>🟢 LED 2 (Velocidade - Pino 1)</h3>
+                <button class="btnLigar" onclick="enviarComando('LIGAR_VELOCIDADE')">LIGAR LED 2</button>
+                <button class="btnDesligar" onclick="enviarComando('DESLIGAR_VELOCIDADE')">DESLIGAR LED 2</button>
+            </div>
+
+        </div>
     </div>
 
     <script>
         const btnConectar = document.getElementById('btnConectar');
         const btnDesconectar = document.getElementById('btnDesconectar');
-        const btnLigar = document.getElementById('btnLigar');
-        const btnDesligar = document.getElementById('btnDesligar');
         const statusTexto = document.getElementById('status');
+        const painelControles = document.getElementById('painelControles');
 
         const servicoUUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
         const caracteristicaUUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
         
         let dispositivoBluetooth;
-        let caracteristicaGlobal; // Variável para segurar a rota de dados
+        let caracteristicaGlobal;
 
         btnConectar.addEventListener('click', async () => {
             try {
@@ -62,36 +81,16 @@
 
                 const servidorGATT = await dispositivoBluetooth.gatt.connect();
                 const servico = await servidorGATT.getPrimaryService(servicoUUID);
-                
-                // Salvamos a característica na variável global para os outros botões usarem
                 caracteristicaGlobal = await servico.getCharacteristic(caracteristicaUUID);
 
                 statusTexto.innerText = 'Status: CONECTADO! 🟢';
                 btnConectar.style.display = 'none';
-                btnDesconectar.style.display = 'inline-block';
-                
-                // Mostra os botões de ação!
-                btnLigar.style.display = 'inline-block';
-                btnDesligar.style.display = 'inline-block';
+                btnDesconectar.style.display = 'block';
+                painelControles.style.display = 'block'; // Mostra os botões de teste
 
             } catch (erro) {
                 console.error(erro);
                 statusTexto.innerText = 'Status: Erro na conexão ❌';
-            }
-        });
-
-        // --- FUNÇÕES DOS BOTÕES NOVOS ---
-        btnLigar.addEventListener('click', async () => {
-            if (caracteristicaGlobal) {
-                let codificador = new TextEncoder();
-                await caracteristicaGlobal.writeValue(codificador.encode("LIGAR"));
-            }
-        });
-
-        btnDesligar.addEventListener('click', async () => {
-            if (caracteristicaGlobal) {
-                let codificador = new TextEncoder();
-                await caracteristicaGlobal.writeValue(codificador.encode("DESLIGAR"));
             }
         });
 
@@ -103,10 +102,17 @@
 
         function aoDesconectar() {
             statusTexto.innerText = 'Status: Desconectado 🔴';
-            btnConectar.style.display = 'inline-block';
+            btnConectar.style.display = 'block';
             btnDesconectar.style.display = 'none';
-            btnLigar.style.display = 'none';
-            btnDesligar.style.display = 'none';
+            painelControles.style.display = 'none'; // Esconde os botões
+        }
+
+        // Função universal para enviar qualquer texto para a placa
+        async function enviarComando(texto) {
+            if (caracteristicaGlobal) {
+                let codificador = new TextEncoder();
+                await caracteristicaGlobal.writeValue(codificador.encode(texto));
+            }
         }
     </script>
 </body>
