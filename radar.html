@@ -3,54 +3,29 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Radar Inteligente</title>
+    <title>Motor do Radar</title>
     <style>
         body { font-family: Arial, sans-serif; text-align: center; padding: 20px; background-color: #2c3e50; color: white; }
         .caixa { background-color: #34495e; padding: 20px; border-radius: 15px; display: inline-block; box-shadow: 0px 4px 10px rgba(0,0,0,0.5); width: 90%; max-width: 400px; }
-        
         button { padding: 15px; font-size: 16px; margin: 8px 0; cursor: pointer; border: none; border-radius: 8px; font-weight: bold; width: 100%; transition: 0.3s; }
-        
         #btnConectar { background-color: #27ae60; color: white; }
         #btnDesconectar { background-color: #c0392b; color: white; display: none; }
-        
-        /* Estilos dos botões de teste separados */
-        .painel-controles { display: none; margin-top: 20px; text-align: left; }
-        .bloco-led { background-color: #2c3e50; padding: 15px; border-radius: 10px; margin-bottom: 15px; border: 1px solid #7f8c8d; }
-        .bloco-led h3 { margin-top: 0; text-align: center; font-size: 18px; color: #ecf0f1; }
-        
-        .btnLigar { background-color: #2980b9; color: white; }
-        .btnLigar:active { background-color: #1c5980; }
-        .btnDesligar { background-color: #7f8c8d; color: white; }
-        .btnDesligar:active { background-color: #636e72; }
-
-        #status { font-size: 18px; margin-top: 15px; color: #f1c40f; font-weight: bold; text-align: center;}
+        .info-gps { background-color: #16a085; padding: 15px; border-radius: 10px; margin-top: 15px; font-size: 14px; text-align: left; display: none; }
+        #status { font-size: 18px; margin-top: 15px; color: #f1c40f; font-weight: bold;}
     </style>
 </head>
 <body>
 
     <div class="caixa">
-        <h2>📡 Painel de Testes</h2>
-
+        <h2>📡 Conexão e Sensores</h2>
         <button id="btnConectar">CONECTAR À PLACA</button>
         <button id="btnDesconectar">DESCONECTAR</button>
-
         <div id="status">Status: Desconectado 🔴</div>
 
-        <!-- Painel com controles individuais (Fica escondido até conectar) -->
-        <div id="painelControles" class="painel-controles">
-            
-            <div class="bloco-led">
-                <h3>🔴 LED 1 (Radar - Pino 0)</h3>
-                <button class="btnLigar" onclick="enviarComando('LIGAR_RADAR')">LIGAR LED 1</button>
-                <button class="btnDesligar" onclick="enviarComando('DESLIGAR_RADAR')">DESLIGAR LED 1</button>
-            </div>
-
-            <div class="bloco-led">
-                <h3>🟢 LED 2 (Velocidade - Pino 1)</h3>
-                <button class="btnLigar" onclick="enviarComando('LIGAR_VELOCIDADE')">LIGAR LED 2</button>
-                <button class="btnDesligar" onclick="enviarComando('DESLIGAR_VELOCIDADE')">DESLIGAR LED 2</button>
-            </div>
-
+        <div id="infoGps" class="info-gps">
+            <strong>Dados do Celular:</strong><br><br>
+            Velocidade Atual: <span id="txtVelocidade">0</span> km/h<br>
+            Distância do Radar Falso: <span id="txtDistancia">Calculando...</span> m
         </div>
     </div>
 
@@ -58,39 +33,40 @@
         const btnConectar = document.getElementById('btnConectar');
         const btnDesconectar = document.getElementById('btnDesconectar');
         const statusTexto = document.getElementById('status');
-        const painelControles = document.getElementById('painelControles');
+        const infoGps = document.getElementById('infoGps');
+        const txtVelocidade = document.getElementById('txtVelocidade');
+        const txtDistancia = document.getElementById('txtDistancia');
 
         const servicoUUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
         const caracteristicaUUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
         
         let dispositivoBluetooth;
         let caracteristicaGlobal;
+        let vigiaGPS;
 
+        // --- 1. COMUNICAÇÃO BLUETOOTH ---
         btnConectar.addEventListener('click', async () => {
             try {
-                statusTexto.innerText = 'Status: Procurando... 🔎';
-                
+                statusTexto.innerText = 'Procurando... 🔎';
                 dispositivoBluetooth = await navigator.bluetooth.requestDevice({
                     filters: [{ name: 'Radar do Carro' }],
                     optionalServices: [servicoUUID]
                 });
 
                 dispositivoBluetooth.addEventListener('gattserverdisconnected', aoDesconectar);
-
-                statusTexto.innerText = 'Status: Conectando... ⏳';
-
                 const servidorGATT = await dispositivoBluetooth.gatt.connect();
                 const servico = await servidorGATT.getPrimaryService(servicoUUID);
                 caracteristicaGlobal = await servico.getCharacteristic(caracteristicaUUID);
 
-                statusTexto.innerText = 'Status: CONECTADO! 🟢';
+                statusTexto.innerText = 'CONECTADO! 🟢';
                 btnConectar.style.display = 'none';
                 btnDesconectar.style.display = 'block';
-                painelControles.style.display = 'block'; // Mostra os botões de teste
+                infoGps.style.display = 'block';
+
+                iniciarRastreamentoGPS(); // Liga o GPS do celular quando conecta no Bluetooth
 
             } catch (erro) {
-                console.error(erro);
-                statusTexto.innerText = 'Status: Erro na conexão ❌';
+                statusTexto.innerText = 'Erro na conexão ❌';
             }
         });
 
@@ -101,18 +77,72 @@
         });
 
         function aoDesconectar() {
-            statusTexto.innerText = 'Status: Desconectado 🔴';
+            statusTexto.innerText = 'Desconectado 🔴';
             btnConectar.style.display = 'block';
             btnDesconectar.style.display = 'none';
-            painelControles.style.display = 'none'; // Esconde os botões
+            infoGps.style.display = 'none';
+            if(vigiaGPS) navigator.geolocation.clearWatch(vigiaGPS);
         }
 
-        // Função universal para enviar qualquer texto para a placa
         async function enviarComando(texto) {
             if (caracteristicaGlobal) {
                 let codificador = new TextEncoder();
                 await caracteristicaGlobal.writeValue(codificador.encode(texto));
             }
+        }
+
+        // --- 2. LÓGICA MATEMÁTICA (HAVERSINE) ---
+        function calcularDistancia(lat1, lon1, lat2, lon2) {
+            const R = 6371e3; // Raio da Terra em metros
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c; // Retorna em metros
+        }
+
+        // --- 3. REGRAS DE NEGÓCIO E GPS ---
+        function iniciarRastreamentoGPS() {
+            
+            // Coordenada Falsa de um Radar para testarmos a lógica
+            const latRadarFalso = -23.550520; 
+            const lonRadarFalso = -46.633308;
+            let radarAlertando = false;
+
+            // O navegador avisa automaticamente sempre que você andar
+            vigiaGPS = navigator.geolocation.watchPosition((posicao) => {
+                
+                const latAtual = posicao.coords.latitude;
+                const lonAtual = posicao.coords.longitude;
+                
+                // Converte a velocidade do GPS de metros por segundo para km/h
+                let velAtual = posicao.coords.speed ? (posicao.coords.speed * 3.6) : 0; 
+                txtVelocidade.innerText = velAtual.toFixed(0);
+
+                // --- GATILHO DO RADAR (Abaixo de 75 metros) ---
+                let distancia = calcularDistancia(latAtual, lonAtual, latRadarFalso, lonRadarFalso);
+                txtDistancia.innerText = distancia.toFixed(0);
+
+                if (distancia <= 75.0 && !radarAlertando) {
+                    enviarComando("LIGAR_RADAR"); // Envia para o ESP32
+                    radarAlertando = true;
+                } else if (distancia > 75.0 && radarAlertando) {
+                    enviarComando("DESLIGAR_RADAR"); // Desliga no ESP32
+                    radarAlertando = false;
+                }
+
+                // --- GATILHO DA VELOCIDADE (Exemplo fixo de 60km/h) ---
+                // Depois você substitui esse 60 pelo limite da API Overpass
+                let limiteVia = 60; 
+                if (velAtual > (limiteVia * 1.10)) {
+                    enviarComando("LIGAR_VELOCIDADE");
+                } else {
+                    enviarComando("DESLIGAR_VELOCIDADE");
+                }
+
+            }, (erro) => {
+                console.error("Erro no GPS:", erro);
+            }, { enableHighAccuracy: true });
         }
     </script>
 </body>
