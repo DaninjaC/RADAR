@@ -67,28 +67,21 @@
         <b>Dados do Celular:</b><br><br>
         Velocidade Atual: <span id="txtVelocidade">0</span> km/h<br>
         Radar mais próximo: <span id="txtDistancia">Procurando...</span><br>
-        Limite (<span id="lblFonte">---</span>): <span id="txtLimite">--</span> km/h
+        Limite da Via: <span id="txtLimite">--</span> km/h
     </div>
 </div>
 
 <script>
-    // --- Variáveis Globais ---
     let listaRadares = [];
     let wakeLock = null;
     let bluetoothDevice = null;
     let bluetoothCaracteristica = null;
+    let ultimoRumo = 0; // Guarda a direção do carro caso ele pare no semáforo
     
-    // Variáveis do OpenStreetMap
-    let lastOsmLat = 0;
-    let lastOsmLon = 0;
-    let lastOsmSpeed = 0; 
-    let isFetchingOsm = false;
-
-    // Configurações do Bluetooth (Devem bater com o código do ESP32)
     const SERVICO_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
     const CARACTERISTICA_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
 
-    // 1. CARREGAR O CSV AO ABRIR A PÁGINA
+    // 1. CARREGAR O CSV
     window.onload = async () => {
         try {
             const resposta = await fetch('maparadar.csv');
@@ -108,26 +101,21 @@
                     listaRadares.push({ lat: lat, lon: lon, vel: vel });
                 }
             }
-            document.getElementById('avisoRadares').innerText = `✅ ${listaRadares.length} radares offline carregados!`;
+            document.getElementById('avisoRadares').innerText = `✅ ${listaRadares.length} radares na memória!`;
         } catch (erro) {
-            document.getElementById('avisoRadares').innerText = `❌ Erro ao carregar mapa de radares offline.`;
+            document.getElementById('avisoRadares').innerText = `❌ Erro ao carregar radares.`;
         }
     };
 
-    // 2. FUNÇÃO WAKE LOCK (Manter tela acesa)
     async function manterTelaLigada() {
-        try {
-            wakeLock = await navigator.wakeLock.request('screen');
-        } catch (err) {
-            console.log("Erro no Wake Lock", err);
-        }
+        try { wakeLock = await navigator.wakeLock.request('screen'); } 
+        catch (err) { console.log("Erro no Wake Lock", err); }
     }
 
-    // 3. CONECTAR BLUETOOTH
     async function conectarBluetooth() {
         try {
             bluetoothDevice = await navigator.bluetooth.requestDevice({
-                filters: [{ name: 'Radar Ninja' }], 
+                filters: [{ name: 'Radar Ninja' }],
                 optionalServices: [SERVICO_UUID]
             });
 
@@ -149,15 +137,14 @@
         }
     }
 
-    // 4. ENVIAR DADOS PARA O ESP32
     function enviarParaESP32(comando) {
         if (bluetoothCaracteristica) {
             let encoder = new TextEncoder('utf-8');
-            bluetoothCaracteristica.writeValue(encoder.encode(comando)).catch(e => console.log("Erro BT", e));
+            bluetoothCaracteristica.writeValue(encoder.encode(comando));
         }
     }
 
-    // 5. CÁLCULO DE DISTÂNCIA (Haversine em metros)
+    // FÓRMULA 1: Calcula Distância em Metros
     function calcularDistancia(lat1, lon1, lat2, lon2) {
         const R = 6371e3; 
         const phi1 = lat1 * Math.PI/180;
@@ -172,97 +159,93 @@
         return R * c; 
     }
 
-    // 6. CONSULTA AO OPENSTREETMAP (Silenciosa e Assíncrona)
-    async function buscarVelocidadeVia(lat, lon) {
-        if (isFetchingOsm) return;
-        isFetchingOsm = true;
-        try {
-            // Pede a rua num raio de 15 metros que tenha limite de velocidade cadastrado
-            let query = `[out:json];way(around:15,${lat},${lon})["maxspeed"];out tags;`;
-            let url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
-            
-            const response = await fetch(url);
-            const data = await response.json();
-            
-            if (data.elements && data.elements.length > 0) {
-                let speedRaw = data.elements[0].tags.maxspeed;
-                let speedParsed = parseInt(speedRaw);
-                if (!isNaN(speedParsed)) {
-                    lastOsmSpeed = speedParsed;
-                }
-            } else {
-                lastOsmSpeed = 0; // Rua não tem velocidade cadastrada no mapa
-            }
-        } catch (error) {
-            console.log("Erro OSM:", error);
-        } finally {
-            isFetchingOsm = false;
-        }
+    // FÓRMULA 2: Calcula o Ângulo (Bússola) de onde está o radar
+    function calcularAngulo(lat1, lon1, lat2, lon2) {
+        let l1 = lat1 * Math.PI / 180;
+        let l2 = lat2 * Math.PI / 180;
+        let dLon = (lon2 - lon1) * Math.PI / 180;
+        let y = Math.sin(dLon) * Math.cos(l2);
+        let x = Math.cos(l1) * Math.sin(l2) - Math.sin(l1) * Math.cos(l2) * Math.cos(dLon);
+        let angulo = Math.atan2(y, x) * 180 / Math.PI;
+        return (angulo + 360) % 360;
     }
 
-    // 7. RASTREIO DE GPS (Coração Híbrido)
+    let gpsID;
     function iniciarGPS() {
         if ("geolocation" in navigator) {
-            navigator.geolocation.watchPosition(
+            gpsID = navigator.geolocation.watchPosition(
                 (position) => {
                     let latAtual = position.coords.latitude;
                     let lonAtual = position.coords.longitude;
                     let velAtual = (position.coords.speed || 0) * 3.6;
                     
+                    // Atualiza direção apenas se estiver andando (evita bugar no semáforo)
+                    if (position.coords.heading !== null && velAtual > 2) {
+                        ultimoRumo = position.coords.heading;
+                    }
+
                     document.getElementById('txtVelocidade').innerText = Math.round(velAtual);
 
                     let radarEncontrado = false;
                     let menorDistancia = 999999;
                     let velDoRadar = 0;
 
-                    // A. PROCURA RADAR OFFLINE (Prioridade 1)
                     for (let radar of listaRadares) {
+                        // Filtro de "caixa" pra economizar processamento
                         if(Math.abs(radar.lat - latAtual) < 0.01 && Math.abs(radar.lon - lonAtual) < 0.01) {
+                            
                             let distancia = calcularDistancia(latAtual, lonAtual, radar.lat, radar.lon);
-                            if (distancia < 500 && distancia < menorDistancia) {
-                                menorDistancia = Math.round(distancia);
-                                velDoRadar = radar.vel;
-                                radarEncontrado = true;
+                            
+                            // Só calcula matemática pesada se estiver a menos de 100m (frente) ou 20m (trás)
+                            if (distancia <= 100) {
+                                let anguloRadar = calcularAngulo(latAtual, lonAtual, radar.lat, radar.lon);
+                                
+                                // Diferença entre o bico do carro e o radar
+                                let diferenca = Math.abs(ultimoRumo - anguloRadar);
+                                if (diferenca > 180) diferenca = 360 - diferenca;
+
+                                // Está num cone de 60 graus na nossa frente?
+                                let radarNaFrente = (diferenca <= 60);
+
+                                let ativarAlerta = false;
+
+                                // REGRA MAGNÍFICA:
+                                if (radarNaFrente && distancia <= 100) {
+                                    ativarAlerta = true; // Aproximando (Até 100m)
+                                } else if (!radarNaFrente && distancia <= 20) {
+                                    ativarAlerta = true; // Passou, mas segura por 20m
+                                }
+
+                                if (ativarAlerta && distancia < menorDistancia) {
+                                    menorDistancia = Math.round(distancia);
+                                    velDoRadar = radar.vel;
+                                    radarEncontrado = true;
+                                }
                             }
                         }
                     }
 
-                    let limiteAtivo = 0;
-
-                    // B. LÓGICA DE DECISÃO (Radar vs OSM)
+                    // COMANDOS DOS LEDS
                     if (radarEncontrado) {
-                        limiteAtivo = velDoRadar;
                         document.getElementById('txtDistancia').innerText = menorDistancia + " m";
-                        document.getElementById('lblFonte').innerText = "Radar";
-                    } else {
-                        document.getElementById('txtDistancia').innerText = "Nenhum no raio de 500m";
-                        document.getElementById('lblFonte').innerText = "Via";
+                        document.getElementById('txtLimite').innerText = velDoRadar;
                         
-                        // Verifica se andou mais de 100m para não travar a API do OpenStreetMap
-                        let distOSM = calcularDistancia(latAtual, lonAtual, lastOsmLat, lastOsmLon);
-                        if (distOSM > 100 || lastOsmLat === 0) {
-                            lastOsmLat = latAtual;
-                            lastOsmLon = lonAtual;
-                            buscarVelocidadeVia(latAtual, lonAtual); 
+                        if (velAtual > velDoRadar) {
+                            enviarParaESP32("EXCESSO"); // Acende Amarelo e Verde
+                        } else {
+                            enviarParaESP32("RADAR");   // Acende só o de Radar
                         }
-                        limiteAtivo = lastOsmSpeed;
-                    }
-
-                    // C. ATUALIZA A TELA
-                    document.getElementById('txtLimite').innerText = limiteAtivo > 0 ? limiteAtivo : "--";
-
-                    // D. ATUALIZA OS LEDS DA PLACA
-                    if (limiteAtivo > 0 && Math.round(velAtual) > limiteAtivo) {
-                        enviarParaESP32("EXCESSO");
-                    } else if (radarEncontrado) {
-                        enviarParaESP32("RADAR");
                     } else {
-                        enviarParaESP32("LIMPO");
+                        document.getElementById('txtDistancia').innerText = "Nenhum radar na rota";
+                        document.getElementById('txtLimite').innerText = "--";
+                        enviarParaESP32("LIMPO");       // Apaga tudo
                     }
                 },
                 (erro) => { console.log("Erro de GPS", erro); },
                 { enableHighAccuracy: true, maximumAge: 0 }
             );
+        } else {
+            alert("GPS não suportado.");
         }
     }
 </script>
