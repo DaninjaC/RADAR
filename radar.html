@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Radar Ninja</title>
+    <title>Radar Ninja Pro</title>
     <style>
         body { font-family: Arial, sans-serif; background-color: #2c3e50; color: white; margin: 0; padding: 20px; display: flex; justify-content: center; }
         .container { background-color: #34495e; padding: 20px; border-radius: 10px; width: 100%; max-width: 400px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
@@ -18,15 +18,15 @@
 <body>
 
 <div class="container">
-    <h2>📡 Radar Ninja</h2>
-    <div id="avisoRadares" class="carregando-aviso">Baixando mapa...</div>
+    <h2>📡 Radar Ninja Pro</h2>
+    <div id="avisoRadares" class="carregando-aviso">Baixando mapa de radares...</div>
     <button id="btnConectar" class="btn-conectar" onclick="conectarBluetooth()">CONECTAR PLACA</button>
     <div id="statusPlaca" class="status">AGUARDANDO... 🔴</div>
     
     <div class="dados-box">
-        Velocidade Atual: <span id="txtVelocidade">0</span> km/h<br>
-        Radar Direto (200m): <span id="txtDistancia">--</span><br>
-        Limite Base (Área): <span id="txtLimite">--</span> km/h
+        Velocidade Atual: <span id="txtVelocidade">0</span> km/h<br><br>
+        📡 Radar (Frente): <span id="txtDistancia">--</span><br>
+        🌍 Limite da Via: <span id="txtLimite">--</span> km/h <span id="fonteLimite" style="font-size: 10px; color:#f1c40f;"></span>
     </div>
 </div>
 
@@ -36,9 +36,15 @@
     let bluetoothCaracteristica = null;
     let ultimoRumo = 0; 
     
+    // Variáveis para o OpenStreetMap
+    let limiteOSMAtual = 0;
+    let latUltimaBuscaOSM = 0;
+    let lonUltimaBuscaOSM = 0;
+    
     const SERVICO_UUID = '4fafc201-1fb5-459e-8fcc-c5c9c331914b';
     const CARACTERISTICA_UUID = 'beb5483e-36e1-4688-b7f5-ea07361b26a8';
 
+    // Carrega o CSV Local (Offline)
     window.onload = async () => {
         try {
             const resposta = await fetch('maparadar.csv');
@@ -51,8 +57,8 @@
                     listaRadares.push({ lat: parseFloat(partes[1]), lon: parseFloat(partes[0]), vel: vel });
                 }
             }
-            document.getElementById('avisoRadares').innerText = `✅ Prontos: ${listaRadares.length}`;
-        } catch (erro) { document.getElementById('avisoRadares').innerText = `❌ Erro CSV.`; }
+            document.getElementById('avisoRadares').innerText = `✅ CSV OK: ${listaRadares.length} radares`;
+        } catch (erro) { document.getElementById('avisoRadares').innerText = `❌ Erro no CSV.`; }
     };
 
     async function manterTelaLigada() {
@@ -99,6 +105,36 @@
         return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
     }
 
+    // A MÁGICA DA INTERNET: Busca velocidade na tag maxspeed do OpenStreetMap
+    async function buscarVelocidadeOSM(lat, lon) {
+        // Se já buscou e andou menos de 100 metros, não faz nada (Evita bloqueio do servidor)
+        if (latUltimaBuscaOSM !== 0) {
+            let distPercorrida = calcularDistancia(lat, lon, latUltimaBuscaOSM, lonUltimaBuscaOSM);
+            if (distPercorrida < 100) return; 
+        }
+
+        latUltimaBuscaOSM = lat;
+        lonUltimaBuscaOSM = lon;
+
+        let query = `[out:json];way(around:20,${lat},${lon})["maxspeed"];out tags;`;
+        let url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
+
+        try {
+            let response = await fetch(url);
+            let data = await response.json();
+            
+            if (data.elements && data.elements.length > 0) {
+                let maxspeed = data.elements[0].tags.maxspeed;
+                let vel = parseInt(maxspeed);
+                if (!isNaN(vel)) {
+                    limiteOSMAtual = vel; // Guarda a velocidade achada
+                }
+            } else {
+                limiteOSMAtual = 0; // Sem informação na via
+            }
+        } catch (e) { console.log("Erro ao buscar no OSM"); }
+    }
+
     function iniciarGPS() {
         if ("geolocation" in navigator) {
             navigator.geolocation.watchPosition((position) => {
@@ -109,9 +145,10 @@
                 if (position.coords.heading !== null && velAtual > 2) ultimoRumo = position.coords.heading;
                 document.getElementById('txtVelocidade').innerText = Math.round(velAtual);
 
-                let limiteDaArea = 0;
-                let distArea = 999999;
-                
+                // Dispara a busca no OpenStreetMap (Roda em segundo plano sem travar)
+                buscarVelocidadeOSM(latAtual, lonAtual);
+
+                let limiteDaAreaCSV = 0;
                 let temRadarFrente = false;
                 let distRadarFrente = 999999;
 
@@ -119,13 +156,12 @@
                     if(Math.abs(radar.lat - latAtual) < 0.02 && Math.abs(radar.lon - lonAtual) < 0.02) {
                         let distancia = calcularDistancia(latAtual, lonAtual, radar.lat, radar.lon);
                         
-                        // MOTOR 1: Velocidade (A Ilusão) - Busca o limite mais próximo na área (Raio 500m)
-                        if (distancia <= 500 && distancia < distArea) {
-                            distArea = Math.round(distancia);
-                            limiteDaArea = radar.vel;
+                        // Captura o radar mais perto só por segurança (Raio 200m)
+                        if (distancia <= 200 && radar.vel > limiteDaAreaCSV) {
+                            limiteDaAreaCSV = radar.vel;
                         }
 
-                        // MOTOR 2: Radar Real Direcional - Só na frente (200m) ou logo atrás (20m)
+                        // MOTOR DO RADAR: Só acende se estiver na frente (200m) ou 20m logo atrás
                         if (distancia <= 200) {
                             let anguloRadar = calcularAngulo(latAtual, lonAtual, radar.lat, radar.lon);
                             let diferenca = Math.abs(ultimoRumo - anguloRadar);
@@ -143,16 +179,32 @@
                     }
                 }
 
+                // ---- DECISÃO FINAL DO LIMITE DE VELOCIDADE ----
+                let limiteOficial = 0;
+                let fonte = "";
+
+                // Prioridade 1: Tem radar na frente? O limite do radar manda.
+                if (temRadarFrente) {
+                    limiteOficial = limiteDaAreaCSV;
+                    fonte = "(RADAR)";
+                } 
+                // Prioridade 2: Se não tem radar, usa o 4G e a internet (OpenStreetMap)
+                else if (limiteOSMAtual > 0) {
+                    limiteOficial = limiteOSMAtual;
+                    fonte = "(MAPA ONLINE)";
+                }
+
                 // ATUALIZA A TELA
-                document.getElementById('txtLimite').innerText = (limiteDaArea > 0) ? limiteDaArea : "--";
-                document.getElementById('txtDistancia').innerText = temRadarFrente ? distRadarFrente + " m" : "--";
+                document.getElementById('txtLimite').innerText = (limiteOficial > 0) ? limiteOficial : "--";
+                document.getElementById('fonteLimite').innerText = fonte;
+                document.getElementById('txtDistancia').innerText = temRadarFrente ? distRadarFrente + " m" : "Livre";
 
                 // LÓGICA INDEPENDENTE DOS LEDS
                 let ledR = "0"; // Radar
                 let ledV = "0"; // Velocidade
 
                 if (temRadarFrente) ledR = "1";
-                if (limiteDaArea > 0 && velAtual > limiteDaArea) ledV = "1";
+                if (limiteOficial > 0 && velAtual > limiteOficial) ledV = "1";
 
                 enviarParaESP32(`R${ledR}_V${ledV}`);
                 
